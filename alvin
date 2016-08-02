@@ -1,0 +1,595 @@
+#!/bin/bash
+
+# This is a script to install ArchLinux quickly on a machine, specifically in my case a VMware Workstation VM.
+
+
+# Created by Kyle Blauer
+# Credit to github.com/helmuthdu for scripts.
+
+
+#This program is free software: you can redistribute it and/or modify
+#it under the terms of the GNU General Public License as published by
+#the Free Software Foundation, either version 3 of the License, or
+#(at your option) any later version.
+#
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details.
+#
+#You should have received a copy of the GNU General Public License
+#along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+checklist=( 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 )
+UEFI=0
+[[ $1 == -v || $1 == --verbose ]] && VERBOSE_MODE=1 || VERBOSE_MODE=0 # VERBOSE MODE
+AUTOMATIC_MODE=0
+TRIM=0
+
+# COLORS
+Bold=$(tput bold)
+Underline=$(tput sgr 0 1)
+Reset=$(tput sgr0)
+# Regular Colors
+Red=$(tput setaf 1)
+Green=$(tput setaf 2)
+Yellow=$(tput setaf 3)
+Blue=$(tput setaf 4)
+Purple=$(tput setaf 5)
+Cyan=$(tput setaf 6)
+White=$(tput setaf 7)
+# Bold
+BRed=${Bold}$(tput setaf 1)
+BGreen=${Bold}$(tput setaf 2)
+BYellow=${Bold}$(tput setaf 3)
+BBlue=${Bold}$(tput setaf 4)
+BPurple=${Bold}$(tput setaf 5)
+BCyan=${Bold}$(tput setaf 6)
+BWhite=${Bold}$(tput setaf 7)
+
+# PROMPT
+prompt1="Enter your option: "
+prompt2="Enter n° of options (ex: 1 2 3 or 1-3): "
+
+# EDITOR
+if [[ -f /usr/bin/vim ]]; then
+  EDITOR="vim"
+elif [[ -z $EDITOR ]]; then
+  EDITOR="nano"
+fi
+
+ROOT_MOUNTPOINT="/dev/sda1"
+MOUNTPOINT="/mnt"
+
+
+select_keymap(){
+  print_title "KEYMAP - https://wiki.archlinux.org/index.php/KEYMAP"
+  print_info "The KEYMAP variable is specified in the /etc/rc.conf file. It defines what keymap the keyboard is in the virtual consoles. Keytable files are provided by the kbd package."
+  echo "US qwerty default is: us-qwerty"
+  read -p "Keymap: " KEYMAP
+  loadkeys $KEYMAP
+}
+
+select_editor(){
+  print_title "DEFAULT EDITOR"
+  editors_list=("nano" "vi" "vim");
+  PS3="$prompt1"
+  echo -e "Select editor\n"
+  select EDITOR in "${editors_list[@]}"; do
+    if contains_element "$EDITOR" "${editors_list[@]}"; then
+      package_install "$EDITOR"
+      break
+    else
+      invalid_option
+    fi
+  done
+}
+
+configure_mirrorlist(){
+  local countries_code=("AU" "AT" "BY" "BE" "BR" "BG" "CA" "CL" "CN" "CO" "CZ" "DK" "EE" "FI" "FR" "DE" "GR" "HU" "IN" "IE" "IL" "IT" "JP" "KZ" "KR" "LV" "LU" "MK" "NL" "NC" "NZ" "NO" "PL" "PT" "RO" "RU" "RS" "SG" "SK" "ZA" "ES" "LK" "SE" "CH" "TW" "TR" "UA" "GB" "US" "UZ" "VN")
+  local countries_name=("Australia" "Austria" "Belarus" "Belgium" "Brazil" "Bulgaria" "Canada" "Chile" "China" "Colombia" "Czech Republic" "Denmark" "Estonia" "Finland" "France" "Germany" "Greece" "Hungary" "India" "Ireland" "Israel" "Italy" "Japan" "Kazakhstan" "Korea" "Latvia" "Luxembourg" "Macedonia" "Netherlands" "New Caledonia" "New Zealand" "Norway" "Poland" "Portugal" "Romania" "Russian" "Serbia" "Singapore" "Slovakia" "South Africa" "Spain" "Sri Lanka" "Sweden" "Switzerland" "Taiwan" "Turkey" "Ukraine" "United Kingdom" "United States" "Uzbekistan" "Viet Nam")
+  country_list(){
+    #`reflector --list-countries | sed 's/[0-9]//g' | sed 's/^/"/g' | sed 's/,.*//g' | sed 's/ *$//g'  | sed 's/$/"/g' | sed -e :a -e '$!N; s/\n/ /; ta'`
+    PS3="$prompt1"
+    echo "Select your country:"
+    select country_name in "${countries_name[@]}"; do
+      if contains_element "$country_name" "${countries_name[@]}"; then
+        country_code=${countries_code[$(( $REPLY - 1 ))]}
+        break
+      else
+        invalid_option
+      fi
+    done
+  }
+  print_title "MIRRORLIST - https://wiki.archlinux.org/index.php/Mirrors"
+  print_info "This option is a guide to selecting and configuring your mirrors, and a listing of current available mirrors."
+  OPTION=n
+  while [[ $OPTION != y ]]; do
+    country_list
+    read_input_text "Confirm country: $country_name"
+  done
+
+  url="https://www.archlinux.org/mirrorlist/?country=${country_code}"
+
+  tmpfile=$(mktemp --suffix=-mirrorlist)
+
+  # Get latest mirror list and save to tmpfile
+  curl -so ${tmpfile} ${url}
+  sed -i 's/^#Server/Server/g' ${tmpfile}
+
+  # Backup and replace current mirrorlist file (if new file is non-zero)
+  if [[ -s ${tmpfile} ]]; then
+   { echo " Backing up the original mirrorlist..."
+     mv -i /etc/pacman.d/mirrorlist /etc/pacman.d/mirrorlist.orig; } &&
+   { echo " Rotating the new list into place..."
+     mv -i ${tmpfile} /etc/pacman.d/mirrorlist; }
+  else
+    echo " Unable to update, could not download list."
+  fi
+  # better repo should go first
+  echo ""
+  echo "Testing mirrorlist speed - this will take a minute..."
+  cp /etc/pacman.d/mirrorlist /etc/pacman.d/mirrorlist.tmp
+  rankmirrors -n 8 /etc/pacman.d/mirrorlist.tmp > /etc/pacman.d/mirrorlist
+  rm /etc/pacman.d/mirrorlist.tmp
+  # allow global read access (required for non-root yaourt execution)
+  chmod +r /etc/pacman.d/mirrorlist
+  echo "Mirrorlist Updated."
+}
+
+partition_simple() {
+  print_title "https://wiki.archlinux.org/index.php/Partitioning"
+  print_info "Partitioning a hard drive allows one to logically divide the available space into sections that can be accessed independently of one another."
+  
+  print_warning "This will delete the ENTIRE disk! USE AT YOUR OWN RISK!  Press Ctrl+C to quit"
+  pause_function
+  
+  echo "Creating partition..."
+  echo ""
+  parted /dev/sda --script -- mklabel msdos
+  parted /dev/sda --script -- mkpart primary ext4 0% 100%
+  parted /dev/sda --script -- set 1 boot on
+  
+  echo ""
+  echo "Formatting drive ext4..."
+  echo ""
+  mkfs.ext4 /dev/sda1
+  
+  echo "Mounting drive..."
+  echo ""
+  mount /dev/sda1 /mnt
+  
+  echo "DONE! Drive was created with one ext4 partition, then mounted to /mnt!"
+  pause_function
+}
+
+install_base_system(){
+  print_title "INSTALL BASE SYSTEM"
+  print_info "Using the pacstrap script we install the base system. The base-devel package group will be installed also."
+  
+  echo "Installing to ${MOUNTPOINT}..."
+  
+  # Some of the extra packages here causing pacstrap to fail, not sure why.  Going to install later
+  pacstrap ${MOUNTPOINT} base base-devel # btrfs-progs f2fs-tools ntp NetworkManager wget sudo 
+  [[ $? -ne 0 ]] && error_msg "Installing base system to ${MOUNTPOINT} failed. Check error messages above."
+}
+
+install_extra_pkg() {
+  arch_chroot_ext "pacman -S --noconfirm btrfs-progs f2fs-tools ntp networkmanager wget vim"
+  
+  # enable NetworkManager on the install
+  echo "Enabling NetworkManager..."
+  arch_chroot_ext "systemctl enable NetworkManager.service"
+  
+  echo "Base System Installed!"
+  pause_function
+}
+
+configure_keymap(){
+  #ADD KEYMAP TO THE NEW SETUP
+  echo "Configuring Keymap..."
+  echo "KEYMAP=$KEYMAP" > ${MOUNTPOINT}/etc/vconsole.conf
+  pause_function
+}
+
+configure_fstab(){
+  print_title "FSTAB - https://wiki.archlinux.org/index.php/Fstab"
+  print_info "The /etc/fstab file contains static filesystem information. It defines how storage devices and partitions are to be mounted and integrated into the overall system. It is read by the mount command to determine which options to use when mounting a specific partition or partition."
+  
+  echo "Creating fstab..."
+  genfstab -U /mnt >> /mnt/etc/fstab
+  echo ""
+  echo "Done"
+  pause_function
+}
+
+configure_hostname(){
+  print_title "HOSTNAME - https://wiki.archlinux.org/index.php/HOSTNAME"
+  print_info "A host name is a unique name created to identify a machine on a network.Host names are restricted to alphanumeric characters.\nThe hyphen (-) can be used, but a host name cannot start or end with it. Length is restricted to 63 characters."
+  read -p "Hostname [ex: archlinux]: " host_name
+  echo "$host_name" > ${MOUNTPOINT}/etc/hostname
+}
+
+configure_timezone(){
+  print_title "TIMEZONE - https://wiki.archlinux.org/index.php/Timezone"
+  print_info "In an operating system the time (clock) is determined by four parts: Time value, Time standard, Time Zone, and DST (Daylight Saving Time if applicable)."
+  OPTION=n
+  while [[ $OPTION != y ]]; do
+    settimezone
+    read_input_text "Confirm timezone (${ZONE}/${SUBZONE})"
+  done
+  arch_chroot_ext "ln -s /usr/share/zoneinfo/${ZONE}/${SUBZONE} /etc/localtime"
+  echo "Done!"
+  pause_function
+}
+
+configure_hardwareclock(){
+  print_title "HARDWARE CLOCK TIME - https://wiki.archlinux.org/index.php/Internationalization"
+  print_info "This is set in /etc/adjtime. Set the hardware clock mode uniformly between your operating systems on the same machine. Otherwise, they will overwrite the time and cause clock shifts (which can cause time drift correction to be miscalibrated)."
+  hwclock_list=('UTC' 'Localtime');
+  PS3="$prompt1"
+  select OPT in "${hwclock_list[@]}"; do
+    case "$REPLY" in
+      1) arch_chroot_ext "hwclock --systohc --utc";
+        ;;
+      2) arch_chroot_ext "hwclock --systohc --localtime";
+        ;;
+      *) invalid_option ;;
+    esac
+    [[ -n $OPT ]] && break
+  done
+  hwclock=$OPT
+  echo "Done!"
+  pause_function
+}
+
+configure_locale(){
+  print_title "LOCALE - https://wiki.archlinux.org/index.php/Locale"
+  print_info "Locales are used in Linux to define which language the user uses. As the locales define the character sets being used as well, setting up the correct locale is especially important if the language contains non-ASCII characters."
+  OPTION=n
+  while [[ $OPTION != y ]]; do
+    setlocale
+    read_input_text "Confirm locale ($LOCALE)"
+  done
+  echo 'LANG="'$LOCALE_UTF8'"' > ${MOUNTPOINT}/etc/locale.conf
+  arch_chroot_ext "sed -i '/'${LOCALE_UTF8}'/s/^#//' /etc/locale.gen"
+  arch_chroot_ext "locale-gen"
+  echo "Done!"
+  pause_function
+}
+
+configure_mkinitcpio(){
+  print_title "MKINITCPIO - https://wiki.archlinux.org/index.php/Mkinitcpio"
+  print_info "mkinitcpio is a Bash script used to create an initial ramdisk environment."
+  sudo sed -i 's/MODULES=""/MODULES="vmw_balloon vmw_pvscsi vsock vmw_vsock_vmci_transport vmwgfx vmw_vmci"/g' /mnt/etc/mkinitcpio.conf
+  arch_chroot_ext "mkinitcpio -p linux"
+  echo "Done!"
+  pause_function
+}
+
+arch_chroot_ext() {
+  arch-chroot $MOUNTPOINT /bin/bash -c "${1}"
+}
+
+install_bootloader() {
+  print_title "BOOTLOADER - https://wiki.archlinux.org/index.php/Bootloader"
+  print_info "The boot loader is responsible for loading the kernel and initial RAM disk before initiating the boot process."
+  echo "Installing grub.."
+  arch_chroot_ext "pacman -S grub --noconfirm"
+  arch_chroot_ext "grub-install /dev/sda"
+  echo "Configuring Grub.."
+  
+  arch_chroot_ext "grub-mkconfig -o /boot/grub/grub.cfg"
+  echo "Done!"
+  pause_function
+  
+}
+
+setlocale() {
+  local _locale_list=(`cat /etc/locale.gen | grep UTF-8 | sed 's/\..*$//' | sed '/@/d' | awk '{print $1}' | uniq | sed 's/#//g'`);
+  PS3="$prompt1"
+  echo "Select locale:"
+  select LOCALE in "${_locale_list[@]}"; do
+    if contains_element "$LOCALE" "${_locale_list[@]}"; then
+      LOCALE_UTF8="${LOCALE}.UTF-8"
+      break
+    else
+      invalid_option
+    fi
+  done
+}
+
+settimezone() {
+  local _zones=(`timedatectl list-timezones | sed 's/\/.*$//' | uniq`)
+  PS3="$prompt1"
+  echo "Select zone:"
+  select ZONE in "${_zones[@]}"; do
+    if contains_element "$ZONE" "${_zones[@]}"; then
+      local _subzones=(`timedatectl list-timezones | grep ${ZONE} | sed 's/^.*\///'`)
+      PS3="$prompt1"
+      echo "Select subzone:"
+      select SUBZONE in "${_subzones[@]}"; do
+        if contains_element "$SUBZONE" "${_subzones[@]}"; then
+          break
+        else
+          invalid_option
+        fi
+      done
+      break
+    else
+      invalid_option
+    fi
+  done
+}
+
+update_clock() {
+  timedatectl set-ntp true
+}
+
+error_msg() {
+  local _msg="${1}"
+  echo -e "${_msg}"
+  exit 1
+}
+
+invalid_option() {
+  print_line
+  echo "Invalid option. Try another one."
+  pause_function
+}
+
+print_line() {
+  printf "%$(tput cols)s\n"|tr ' ' '-'
+}
+
+print_title() {
+  clear
+  print_line
+  echo -e "# ${Bold}$1${Reset}"
+  print_line
+  echo ""
+}
+
+print_info() {
+  #Console width number
+  T_COLS=`tput cols`
+  echo -e "${Bold}$1${Reset}\n" | fold -sw $(( $T_COLS - 18 )) | sed 's/^/\t/'
+}
+
+print_warning() {
+  T_COLS=`tput cols`
+  echo -e "${BYellow}$1${Reset}\n" | fold -sw $(( $T_COLS - 1 ))
+}
+
+print_danger() {
+  T_COLS=`tput cols`
+  echo -e "${BRed}$1${Reset}\n" | fold -sw $(( $T_COLS - 1 ))
+}
+
+read_input() {
+  if [[ $AUTOMATIC_MODE -eq 1 ]]; then
+    OPTION=$1
+  else
+    read -p "$prompt1" OPTION
+  fi
+}
+
+read_input_text() {
+  if [[ $AUTOMATIC_MODE -eq 1 ]]; then
+    OPTION=$2
+  else
+    read -p "$1 [y/N]: " OPTION
+    echo ""
+  fi
+  OPTION=`echo "$OPTION" | tr '[:upper:]' '[:lower:]'`
+}
+
+read_input_options() {
+  local line
+  local packages
+  if [[ $AUTOMATIC_MODE -eq 1 ]]; then
+    array=("$1")
+  else
+    read -p "$prompt2" OPTION
+    array=("$OPTION")
+  fi
+  for line in ${array[@]/,/ }; do
+    if [[ ${line/-/} != $line ]]; then
+      for ((i=${line%-*}; i<=${line#*-}; i++)); do
+        packages+=($i);
+      done
+    else
+      packages+=($line)
+    fi
+  done
+  OPTIONS=("${packages[@]}")
+}
+
+check_boot_system() {
+  if [[ "$(cat /sys/class/dmi/id/sys_vendor)" == 'Apple Inc.' ]] || [[ "$(cat /sys/class/dmi/id/sys_vendor)" == 'Apple Computer, Inc.' ]]; then
+    modprobe -r -q efivars || true  # if MAC
+  else
+    modprobe -q efivarfs            # all others
+  fi
+  if [[ -d "/sys/firmware/efi/" ]]; then
+    ## Mount efivarfs if it is not already mounted
+    if [[ -z $(mount | grep /sys/firmware/efi/efivars) ]]; then
+      mount -t efivarfs efivarfs /sys/firmware/efi/efivars
+    fi
+    UEFI=1
+    echo "UEFI Mode detected"
+  else
+    UEFI=0
+    echo "BIOS Mode detected"
+  fi
+}
+
+check_trim() {
+  [[ -n $(hdparm -I /dev/sda | grep TRIM &> /dev/null) ]] && TRIM=1
+}
+
+mainmenu_item() {
+  #if the task is done make sure we get the state
+  if [ $1 == 1 -a "$3" != "" ]; then
+    state="${BGreen}[${Reset}$3${BGreen}]${Reset}"
+  fi
+  echo -e "$(checkbox "$1") ${Bold}$2${Reset} ${state}"
+}
+
+elihw() {
+  [[ $OPT == b || $OPT == d ]] && break;
+}
+
+install_extra_options() {
+  if [[ -f `pwd`/qi-vm-extra ]]; then
+    cp ./qi-vm-extra /mnt/home
+    arch_chroot_ext "source /home/qi-vm-extra"
+  else
+    echo "missing file: sharedfuncs"
+    pause_function
+    return
+  fi
+}
+
+menu_item() {
+  #check if the number of arguments is less then 2
+  [[ $# -lt 2 ]] && _package_name="$1" || _package_name="$2";
+  #list of chars to remove from the package name
+  local _chars=("Ttf-" "-bzr" "-hg" "-svn" "-git" "-stable" "-icon-theme" "Gnome-shell-theme-" "Gnome-shell-extension-");
+  #remove chars from package name
+  for char in ${_chars[@]}; do _package_name=`echo ${_package_name^} | sed 's/'$char'//'`; done
+  #display checkbox and package name
+  echo -e "$(checkbox_package "$1") ${Bold}${_package_name}${Reset}"
+}
+
+checkbox() {
+  #display [X] or [ ]
+  [[ "$1" -eq 1 ]] && echo -e "${BBlue}[${Reset}${Bold}X${BBlue}]${Reset}" || echo -e "${BBlue}[ ${BBlue}]${Reset}";
+}
+
+contains_element() {
+  #check if an element exist in a string
+  for e in "${@:2}"; do [[ $e == $1 ]] && break; done;
+}
+
+pause_function() {
+  print_line
+  if [[ $AUTOMATIC_MODE -eq 0 ]]; then
+    read -e -sn 1 -p "Press enter to continue..."
+  fi
+}
+
+root_password(){
+  print_title "ROOT PASSWORD"
+  print_warning "Enter your new root password"
+  arch_chroot_ext "passwd"
+  pause_function
+}
+
+finish(){
+  print_title "INSTALL COMPLETED"
+  read_input_text "Reboot system"
+  if [[ $OPTION == y ]]; then
+    umount_partitions
+    reboot
+  fi
+  exit 0
+}
+
+### MAIN 
+check_boot_system
+check_trim
+update_clock
+pacman -Sy
+while true
+do
+  print_title "ArchLinux Quick Install - Designed for VMs"
+  echo " 1) $(mainmenu_item "${checklist[1]}"  "Select Keymap"            "${KEYMAP}" )"
+  echo " 2) $(mainmenu_item "${checklist[2]}"  "Select Editor"            "${EDITOR}" )"
+  echo " 3) $(mainmenu_item "${checklist[3]}"  "Configure Mirrorlist"     "${country_name} (${country_code})" )"
+  echo " 4) $(mainmenu_item "${checklist[4]}"  "Partition Scheme")"
+  echo " 5) $(mainmenu_item "${checklist[5]}"  "Install Base System")"
+  echo " 6) $(mainmenu_item "${checklist[6]}"  "Configure Fstab"          "${fstab}" )"
+  echo " 7) $(mainmenu_item "${checklist[7]}"  "Configure Hostname"       "${host_name}" )"
+  echo " 8) $(mainmenu_item "${checklist[8]}"  "Configure Timezone"       "${ZONE}/${SUBZONE}" )"
+  echo " 9) $(mainmenu_item "${checklist[9]}"  "Configure Hardware Clock" "${hwclock}" )"
+  echo "10) $(mainmenu_item "${checklist[10]}" "Configure Locale"         "${LOCALE}" )"
+  echo "11) $(mainmenu_item "${checklist[11]}" "Configure Mkinitcpio")"
+  echo "12) $(mainmenu_item "${checklist[12]}" "Install Bootloader"       "${bootloader}" )"
+  echo "13) $(mainmenu_item "${checklist[13]}" "Root Password")"
+  echo ""
+  echo "Optional Steps:"
+  echo "14) $(mainmenu_item "${checklist[14]}" "Extra Options (Desktop Environments)")"
+  echo " d) Done"
+  echo ""
+  read_input_options
+  for OPT in ${OPTIONS[@]}; do
+    case "$OPT" in
+      1)
+        select_keymap
+        checklist[1]=1
+        ;;
+      2)
+        select_editor
+        checklist[2]=1
+        ;;
+      3)
+        configure_mirrorlist
+        checklist[3]=1
+        ;;
+      4)
+        partition_simple
+        checklist[4]=1
+        ;;
+      5)
+        install_base_system
+        configure_keymap
+        install_extra_pkg
+        checklist[5]=1
+        ;;
+      6)
+        configure_fstab
+        checklist[6]=1
+        ;;
+      7)
+        configure_hostname
+        checklist[7]=1
+        ;;
+      8)
+        configure_timezone
+        checklist[8]=1
+        ;;
+      9)
+        configure_hardwareclock
+        checklist[9]=1
+        ;;
+      10)
+        configure_locale
+        checklist[10]=1
+        ;;
+      11)
+        configure_mkinitcpio
+        checklist[11]=1
+        ;;
+      12)
+        install_bootloader
+        checklist[12]=1
+        ;;
+      13)
+        root_password
+        checklist[13]=1
+        ;;
+      14)
+        install_extra_options
+        checklist[14]=1
+        ;;
+      "d")
+        finish
+        ;;
+      *)
+        invalid_option
+        ;;
+    esac
+  done
+done
+
